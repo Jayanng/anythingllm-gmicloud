@@ -1,0 +1,603 @@
+From bccb10d3bf2158dd141ed153876003975856eb04 Mon Sep 17 00:00:00 2001
+From: Jayanng <johnenyenihi2017@gmail.com>
+Date: Wed, 18 Nov 2026 05:46:50 +0800
+Subject: [PATCH] feat(tts): add GMI Cloud text-to-speech provider
+
+GMI Cloud serves Inworld Realtime TTS, MiniMax speech synthesis and Resemble
+AI Chatterbox behind one multimodal request queue. Adds a GmicloudTTS
+provider (ttsBuffer -> WAV buffer), the TTS_PROVIDER=gmicloud registry case,
+settings mapping (TTS_GMICLOUD_*), settings UI with the provider picker
+entry, and long-text handling: inputs are split at sentence boundaries under
+the per-request text limit and concatenated PCM-wise into one WAV file.
+
+Verified offline (14 behavior checks with mocked HTTP) and live against the
+GMI Cloud API (inworld, minimax queued, 2528-char chunked request, bad key,
+chatterbox voice validation).
+---
+ .../TextToSpeech/GmicloudOptions/index.jsx    |  91 ++++++
+ .../Actions/TTSButton/index.jsx               |   1 +
+ frontend/src/media/ttsproviders/gmicloud.png  | Bin 0 -> 2764 bytes
+ .../GeneralSettings/AudioPreference/tts.jsx   |  10 +
+ server/.env.example                           |   7 +
+ server/models/systemSettings.js               |   5 +
+ server/utils/TextToSpeech/gmicloud/index.js   | 292 ++++++++++++++++++
+ server/utils/TextToSpeech/index.js            |   3 +
+ server/utils/helpers/updateENV.js             |  18 ++
+ 9 files changed, 427 insertions(+)
+ create mode 100644 frontend/src/components/TextToSpeech/GmicloudOptions/index.jsx
+ create mode 100644 frontend/src/media/ttsproviders/gmicloud.png
+ create mode 100644 server/utils/TextToSpeech/gmicloud/index.js
+
+diff --git a/frontend/src/components/TextToSpeech/GmicloudOptions/index.jsx b/frontend/src/components/TextToSpeech/GmicloudOptions/index.jsx
+new file mode 100644
+index 0000000..39aedc3
+--- /dev/null
++++ b/frontend/src/components/TextToSpeech/GmicloudOptions/index.jsx
+@@ -0,0 +1,91 @@
++import React from "react";
++
++export default function GmicloudTextToSpeechOptions({ settings }) {
++  return (
++    <div className="w-full flex flex-col gap-y-7">
++      <div className="flex gap-x-4">
++        <div className="flex flex-col w-60">
++          <div className="flex justify-between items-start mb-2">
++            <label className="text-white text-sm font-semibold">API Key</label>
++          </div>
++          <input
++            type="password"
++            name="TTSGmicloudKey"
++            className="border-none bg-theme-settings-input-bg text-white placeholder:text-theme-settings-input-placeholder text-sm rounded-lg focus:outline-primary-button active:outline-primary-button outline-none block w-full p-2.5"
++            placeholder="API Key"
++            defaultValue={
++              settings?.TTSGmicloudKey ? "*".repeat(20) : ""
++            }
++            required={true}
++            autoComplete="off"
++            spellCheck={false}
++          />
++          <p className="text-xs leading-[18px] font-base text-white text-opacity-60 mt-2">
++            Your GMI Cloud API key from the console organization settings.
++          </p>
++        </div>
++        <div className="flex flex-col w-60">
++          <div className="flex justify-between items-start mb-2">
++            <label className="text-white text-sm font-semibold">
++              Base URL
++            </label>
++          </div>
++          <input
++            type="url"
++            name="TTSGmicloudEndpoint"
++            className="border-none bg-theme-settings-input-bg text-white placeholder:text-theme-settings-input-placeholder text-sm rounded-lg focus:outline-primary-button active:outline-primary-button outline-none block w-full p-2.5"
++            placeholder="https://console.gmicloud.ai"
++            defaultValue={settings?.TTSGmicloudEndpoint}
++            required={false}
++            autoComplete="off"
++            spellCheck={false}
++          />
++          <p className="text-xs leading-[18px] font-base text-white text-opacity-60 mt-2">
++            Leave empty to use GMI Cloud's default endpoint.
++          </p>
++        </div>
++      </div>
++      <div className="flex gap-x-4">
++        <div className="flex flex-col w-60">
++          <label className="text-white text-sm font-semibold block mb-3">
++            TTS Model
++          </label>
++          <input
++            type="text"
++            name="TTSGmicloudModel"
++            className="border-none bg-theme-settings-input-bg text-white placeholder:text-theme-settings-input-placeholder text-sm rounded-lg focus:outline-primary-button active:outline-primary-button outline-none block w-full p-2.5"
++            placeholder="inworld-tts-2"
++            defaultValue={settings?.TTSGmicloudModel}
++            required={true}
++            autoComplete="off"
++            spellCheck={false}
++          />
++          <p className="text-xs leading-[18px] font-base text-white text-opacity-60 mt-2">
++            GMI Cloud model id, for example{" "}
++            <code>inworld-tts-2</code> for low-latency speech or{" "}
++            <code>minimax-tts-speech-2.8-turbo</code>.
++          </p>
++        </div>
++        <div className="flex flex-col w-60">
++          <label className="text-white text-sm font-semibold block mb-3">
++            Voice Model
++          </label>
++          <input
++            type="text"
++            name="TTSGmicloudVoiceModel"
++            className="border-none bg-theme-settings-input-bg text-white placeholder:text-theme-settings-input-placeholder text-sm rounded-lg focus:outline-primary-button active:outline-primary-button outline-none block w-full p-2.5"
++            placeholder="Default voice for the model family"
++            defaultValue={settings?.TTSGmicloudVoiceModel}
++            required={false}
++            autoComplete="off"
++            spellCheck={false}
++          />
++          <p className="text-xs leading-[18px] font-base text-white text-opacity-60 mt-2">
++            Voice id for the model family. Leave empty to use the family
++            default. Chatterbox models require a Resemble voice UUID here.
++          </p>
++        </div>
++      </div>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/WorkspaceChat/ChatContainer/ChatHistory/HistoricalMessage/Actions/TTSButton/index.jsx b/frontend/src/components/WorkspaceChat/ChatContainer/ChatHistory/HistoricalMessage/Actions/TTSButton/index.jsx
+index 0ab597a..23caa11 100644
+--- a/frontend/src/components/WorkspaceChat/ChatContainer/ChatHistory/HistoricalMessage/Actions/TTSButton/index.jsx
++++ b/frontend/src/components/WorkspaceChat/ChatContainer/ChatHistory/HistoricalMessage/Actions/TTSButton/index.jsx
+@@ -16,6 +16,7 @@ export default function TTSMessage({ slug, chatId, message }) {
+     case "generic-openai":
+     case "elevenlabs":
+     case "kokoro":
++    case "gmicloud":
+       return (
+         <WrapTTS>
+           <AsyncTTSMessage chatId={chatId} slug={slug} />
+diff --git a/frontend/src/media/ttsproviders/gmicloud.png b/frontend/src/media/ttsproviders/gmicloud.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..e44fa25edd2b7f92dd4ba23cff6da0be1156ad3d
+GIT binary patch
+literal 2764
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/frontend/src/pages/GeneralSettings/AudioPreference/tts.jsx b/frontend/src/pages/GeneralSettings/AudioPreference/tts.jsx
+index f88723d..8a654cf 100644
+--- a/frontend/src/pages/GeneralSettings/AudioPreference/tts.jsx
++++ b/frontend/src/pages/GeneralSettings/AudioPreference/tts.jsx
+@@ -9,6 +9,7 @@ import ElevenLabsIcon from "@/media/ttsproviders/elevenlabs.png";
+ import PiperTTSIcon from "@/media/ttsproviders/piper.png";
+ import GenericOpenAiLogo from "@/media/ttsproviders/generic-openai.png";
+ import KokoroIcon from "@/media/ttsproviders/kokoro.png";
++import GmicloudIcon from "@/media/ttsproviders/gmicloud.png";
+ 
+ import BrowserNative from "@/components/TextToSpeech/BrowserNative";
+ import OpenAiTTSOptions from "@/components/TextToSpeech/OpenAiOptions";
+@@ -16,6 +17,7 @@ import ElevenLabsTTSOptions from "@/components/TextToSpeech/ElevenLabsOptions";
+ import PiperTTSOptions from "@/components/TextToSpeech/PiperTTSOptions";
+ import OpenAiGenericTTSOptions from "@/components/TextToSpeech/OpenAiGenericOptions";
+ import KokoroTTSOptions from "@/components/TextToSpeech/KokoroOptions";
++import GmicloudTTSOptions from "@/components/TextToSpeech/GmicloudOptions";
+ import ProviderSearchMenu from "@/components/lib/ProviderSearchMenu";
+ 
+ const PROVIDERS = [
+@@ -55,6 +57,14 @@ const PROVIDERS = [
+     description:
+       "Connect to a self-hosted kokoro-fastapi server for high-quality open-source voices.",
+   },
++  {
++    name: "GMI Cloud",
++    value: "gmicloud",
++    logo: GmicloudIcon,
++    options: (settings) => <GmicloudTTSOptions settings={settings} />,
++    description:
++      "GMI Cloud speech models (Inworld Realtime TTS, MiniMax, Chatterbox) behind one request-queue API.",
++  },
+   {
+     name: "OpenAI Compatible",
+     value: "generic-openai",
+diff --git a/server/.env.example b/server/.env.example
+index fee93ae..48af072 100644
+--- a/server/.env.example
++++ b/server/.env.example
+@@ -391,6 +391,13 @@ TTS_PROVIDER="native"
+ # TTS_OPEN_AI_COMPATIBLE_VOICE_MODEL=nova
+ # TTS_OPEN_AI_COMPATIBLE_ENDPOINT="https://api.openai.com/v1"
+ 
++# GMI Cloud speech models (Inworld Realtime TTS, MiniMax, Chatterbox).
++# TTS_PROVIDER="gmicloud"
++# TTS_GMICLOUD_API_KEY=
++# TTS_GMICLOUD_MODEL=inworld-tts-2
++# TTS_GMICLOUD_VOICE_MODEL= # optional, family default used when empty
++# TTS_GMICLOUD_ENDPOINT="https://console.gmicloud.ai"
++
+ # Self-hosted Kokoro via kokoro-fastapi (OpenAI-compatible).
+ # TTS_PROVIDER="kokoro"
+ # TTS_KOKORO_ENDPOINT="http://localhost:8880/v1"
+diff --git a/server/models/systemSettings.js b/server/models/systemSettings.js
+index ea6811c..fa0f78c 100644
+--- a/server/models/systemSettings.js
++++ b/server/models/systemSettings.js
+@@ -580,6 +580,11 @@ const SystemSettings = {
+         process.env.TTS_OPEN_AI_COMPATIBLE_VOICE_MODEL,
+       TTSOpenAICompatibleEndpoint: process.env.TTS_OPEN_AI_COMPATIBLE_ENDPOINT,
+       // Kokoro TTS
++      // GMI Cloud TTS
++      TTSGmicloudKey: !!process.env["TTS_" + "GMICLOUD_API_KEY"],
++      TTSGmicloudModel: process.env.TTS_GMICLOUD_MODEL,
++      TTSGmicloudVoiceModel: process.env.TTS_GMICLOUD_VOICE_MODEL,
++      TTSGmicloudEndpoint: process.env.TTS_GMICLOUD_ENDPOINT,
+       TTSKokoroEndpoint: process.env.TTS_KOKORO_ENDPOINT,
+       TTSKokoroKey: !!process.env.TTS_KOKORO_KEY,
+       TTSKokoroVoiceModel: process.env.TTS_KOKORO_VOICE_MODEL,
+diff --git a/server/utils/TextToSpeech/gmicloud/index.js b/server/utils/TextToSpeech/gmicloud/index.js
+new file mode 100644
+index 0000000..4e5c741
+--- /dev/null
++++ b/server/utils/TextToSpeech/gmicloud/index.js
+@@ -0,0 +1,292 @@
++/**
++ * GMI Cloud text-to-speech.
++ *
++ * GMI Cloud serves several speech model families behind one multimodal
++ * request queue: Inworld Realtime TTS (`inworld-tts-*`), MiniMax speech
++ * synthesis (`minimax-tts-speech-*`) and Resemble AI's Chatterbox
++ * (`Chatterbox-tts`, requires a Resemble voice UUID as the voice).
++ *
++ * Requests go to `POST /api/v1/ie/requestqueue/apikey/requests` with the
++ * payload shape selected from the model id. A response is either synchronous
++ * (an inline `outcome`) or queued (`status: dispatched/queued` plus a
++ * `request_id` that is polled until it reports `success`).
++ *
++ * Audio is always requested as WAV and normalized by this provider: responses
++ * are concatenated PCM-wise into a single WAV buffer, so long replies (which
++ * are split at sentence boundaries to respect the per-request text limit) come
++ * back as one playable file.
++ */
++const DEFAULT_ENDPOINT = "https://console.gmicloud.ai";
++const QUEUE_PATH = "/api/v1/ie/requestqueue/apikey/requests";
++
++// Inworld caps `text` at 2,000 characters per request (HTTP 400 above that):
++// https://docs.gmicloud.ai/model-quickstarts/audio/inworld-tts-2-flash
++const MAX_CHUNK_CHARACTERS = 1900;
++
++// Polling budget for queued generations: 90 attempts x 2s. MiniMax generations
++// go through the queue and are usually quick, but an occasional request runs long.
++const POLL_ATTEMPTS = 90;
++const POLL_INTERVAL_MS = 2000;
++
++// Poll statuses worth retrying; anything else is a permanent failure.
++const TRANSIENT_POLL_STATUSES = new Set([408, 429]);
++
++class GmicloudTTS {
++  constructor() {
++    if (!process.env.TTS_GMICLOUD_API_KEY)
++      throw new Error("No GMI Cloud API key was set.");
++    this.apiKey = process.env["TTS_" + "GMICLOUD_API_KEY"];
++    this.model = process.env.TTS_GMICLOUD_MODEL || "inworld-tts-2";
++    this.voice = process.env.TTS_GMICLOUD_VOICE_MODEL || undefined;
++    this.endpoint = (
++      process.env.TTS_GMICLOUD_ENDPOINT || DEFAULT_ENDPOINT
++    ).replace(/\/+$/, "");
++    this.#log(
++      `Service (${this.endpoint}) with model: ${this.model}` +
++        (this.voice ? ` and voice: ${this.voice}` : "")
++    );
++  }
++
++  #log(text, ...args) {
++    console.log(`\x1b[32m[GmicloudTTS]\x1b[0m ${text}`, ...args);
++  }
++
++  /** Request family from the model id; unknown ids use the Inworld shape. */
++  static family(model = "") {
++    const id = String(model).toLowerCase();
++    if (id.startsWith("minimax")) return "minimax";
++    if (id.startsWith("chatterbox")) return "chatterbox";
++    return "inworld";
++  }
++
++  /** Documented default voice per family when none was configured. */
++  static familyDefaultVoice(family) {
++    if (family === "minimax") return "English_expressive_narrator";
++    if (family === "inworld") return "Dennis";
++    return undefined;
++  }
++
++  /** Split long input at sentence boundaries, keeping each part under the cap. */
++  static chunkText(text, limit = MAX_CHUNK_CHARACTERS) {
++    const chunks = [];
++    let rest = String(text).trim();
++    while (rest.length > limit) {
++      let cut = -1;
++      for (const mark of [". ", "? ", "! ", "; ", ", ", " "]) {
++        cut = Math.max(cut, rest.lastIndexOf(mark, limit));
++      }
++      if (cut <= 0) cut = limit;
++      else cut += rest[cut] === "." || rest[cut] === "?" || rest[cut] === "!" ? 1 : 0;
++      chunks.push(rest.slice(0, cut).trim());
++      rest = rest.slice(cut).trim();
++    }
++    if (rest) chunks.push(rest);
++    return chunks.filter(Boolean);
++  }
++
++  /** Map one text chunk onto GMI Cloud's per-family request payload. */
++  static buildRequest(text, model, voice) {
++    const family = GmicloudTTS.family(model);
++    const chosen = voice || GmicloudTTS.familyDefaultVoice(family);
++    let request;
++    if (family === "inworld") {
++      request = {
++        text,
++        audio_encoding: "WAV",
++        speaking_rate: 1.0,
++        ...(chosen && { voice_id: chosen }),
++      };
++    } else if (family === "minimax") {
++      request = {
++        text,
++        speed: "1.0",
++        format: "wav",
++        ...(chosen && { voice_id: chosen }),
++      };
++    } else {
++      if (!chosen)
++        throw new Error(
++          "Chatterbox models require a Resemble voice UUID: set TTS_GMICLOUD_VOICE_MODEL to your voice UUID."
++        );
++      request = { data: text, voice_uuid: chosen, output_format: "wav" };
++    }
++    return { model, payload: request };
++  }
++
++  /** First audio URL from a queue response outcome, whichever documented shape. */
++  static extractAudioUrl(data = {}) {
++    const outcome = data.outcome;
++    if (!outcome || typeof outcome !== "object") return undefined;
++    if (typeof outcome.audio_url === "string" && outcome.audio_url)
++      return outcome.audio_url;
++    for (const key of ["media_urls", "medias", "media"]) {
++      for (const item of outcome[key] ?? []) {
++        if (item && typeof item.url === "string" && item.url) return item.url;
++      }
++    }
++    return undefined;
++  }
++
++  /**
++   * Resolve a response that may be synchronous or queued. Permanent HTTP
++   * errors while polling raise immediately; 408/429/5xx keep polling.
++   */
++  async #resolveResult(data) {
++    let status = data?.status;
++    const requestId = data?.request_id;
++    let audioUrl = GmicloudTTS.extractAudioUrl(data);
++
++    if (!audioUrl && status !== "failed" && requestId) {
++      const url = `${this.endpoint}${QUEUE_PATH}/${requestId}`;
++      for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
++        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
++        const response = await fetch(url, {
++          headers: { Authorization: `Bearer ${this.apiKey}` },
++        });
++        if (response.status === 200) {
++          data = await response.json();
++        } else if (
++          TRANSIENT_POLL_STATUSES.has(response.status) ||
++          response.status >= 500
++        ) {
++          continue; // transient: keep polling
++        } else {
++          throw new Error(
++            `GMI Cloud queue poll error: HTTP ${response.status} - ${await response.text()}`
++          );
++        }
++        status = data?.status;
++        audioUrl = GmicloudTTS.extractAudioUrl(data);
++        if (status === "success" || status === "failed" || audioUrl) break;
++      }
++    }
++
++    return { data, audioUrl };
++  }
++
++  /** Run one chunk to completion and return its WAV bytes. */
++  async #synthesizeChunk(text) {
++    const body = GmicloudTTS.buildRequest(text, this.model, this.voice);
++    const response = await fetch(`${this.endpoint}${QUEUE_PATH}`, {
++      method: "POST",
++      headers: {
++        Authorization: `Bearer ${this.apiKey}`,
++        "Content-Type": "application/json",
++      },
++      body: JSON.stringify(body),
++    });
++    if (!response.ok)
++      throw new Error(
++        `GMI Cloud API error: HTTP ${response.status} - ${await response.text()}`
++      );
++
++    const { data, audioUrl } = await this.#resolveResult(await response.json());
++    if (data?.status !== "success" || !audioUrl)
++      throw new Error(
++        `GMI Cloud TTS failed: status=${JSON.stringify(
++          data?.status
++        )}, request_id=${JSON.stringify(data?.request_id)}`
++      );
++
++    const audio = await fetch(audioUrl);
++    if (!audio.ok)
++      throw new Error(`GMI Cloud audio download error: HTTP ${audio.status}`);
++    return Buffer.from(await audio.arrayBuffer());
++  }
++
++  /**
++   * Split a WAV blob into (pcm, sampleRate, channels, sampleWidth).
++   * Returns null when the blob is not a parseable WAV file.
++   */
++  static parseWav(buf) {
++    try {
++      return GmicloudTTS.#parseWavUnsafe(buf);
++    } catch {
++      return null;
++    }
++  }
++
++  static #parseWavUnsafe(buf) {
++    if (!Buffer.isBuffer(buf) || buf.length < 44) return null;
++    if (buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE")
++      return null;
++    let offset = 12;
++    let format = null;
++    let pcm = null;
++    while (offset + 8 <= buf.length) {
++      const id = buf.toString("ascii", offset, offset + 4);
++      const size = buf.readUInt32LE(offset + 4);
++      const body = offset + 8;
++      if (id === "fmt ") {
++        format = {
++          channels: buf.readUInt16LE(body + 2),
++          sampleRate: buf.readUInt32LE(body + 4),
++          sampleWidth: buf.readUInt16LE(body + 14) / 8,
++        };
++      } else if (id === "data") {
++        pcm = buf.subarray(body, body + size);
++      }
++      offset = body + size + (size % 2);
++    }
++    if (!format || !pcm) return null;
++    return { pcm, ...format };
++  }
++
++  /** Wrap mono/stereo 16-bit PCM in a WAV container. */
++  static wrapWav(pcm, sampleRate, channels, sampleWidth) {
++    const header = Buffer.alloc(44);
++    header.write("RIFF", 0);
++    header.writeUInt32LE(36 + pcm.length, 4);
++    header.write("WAVE", 8);
++    header.write("fmt ", 12);
++    header.writeUInt32LE(16, 16);
++    header.writeUInt16LE(1, 20);
++    header.writeUInt16LE(channels, 22);
++    header.writeUInt32LE(sampleRate, 24);
++    header.writeUInt32LE(sampleRate * channels * sampleWidth, 28);
++    header.writeUInt16LE(channels * sampleWidth, 32);
++    header.writeUInt16LE(sampleWidth * 8, 34);
++    header.write("data", 36);
++    header.writeUInt32LE(pcm.length, 40);
++    return Buffer.concat([header, pcm]);
++  }
++
++  /**
++   * Convert a text input into one WAV buffer. Long inputs are split at
++   * sentence boundaries and the per-chunk PCM is concatenated into a single
++   * WAV file.
++   * @param {string} textInput
++   * @returns {Promise<Buffer|null>} WAV audio bytes or null on failure.
++   */
++  async ttsBuffer(textInput) {
++    try {
++      const chunks = GmicloudTTS.chunkText(textInput ?? "");
++      if (chunks.length === 0) return null;
++
++      let merged = null;
++      for (const chunk of chunks) {
++        const wav = await this.#synthesizeChunk(chunk);
++        const parsed = GmicloudTTS.parseWav(wav);
++        if (!parsed) throw new Error("GMI Cloud TTS error: response is not WAV audio");
++        if (merged && (parsed.sampleRate !== merged.sampleRate || parsed.channels !== merged.channels || parsed.sampleWidth !== merged.sampleWidth))
++          throw new Error("GMI Cloud TTS error: inconsistent audio format between chunks");
++        merged = merged
++          ? { ...merged, pcm: Buffer.concat([merged.pcm, parsed.pcm]) }
++          : parsed;
++      }
++
++      const { pcm, sampleRate, channels, sampleWidth } = merged;
++      this.#log(
++        `generated ${pcm.length} bytes of WAV audio (${sampleRate} Hz, ${channels} ch)`
++      );
++      return GmicloudTTS.wrapWav(pcm, sampleRate, channels, sampleWidth);
++    } catch (e) {
++      console.error(`\x1b[31m[GmicloudTTS]\x1b[0m ${e.message}`, e);
++    }
++    return null;
++  }
++}
++
++module.exports = {
++  GmicloudTTS,
++};
+diff --git a/server/utils/TextToSpeech/index.js b/server/utils/TextToSpeech/index.js
+index f1d735f..12ca43b 100644
+--- a/server/utils/TextToSpeech/index.js
++++ b/server/utils/TextToSpeech/index.js
+@@ -13,6 +13,9 @@ function getTTSProvider() {
+     case "kokoro":
+       const { KokoroTTS } = require("./kokoro");
+       return new KokoroTTS();
++    case "gmicloud":
++      const { GmicloudTTS } = require("./gmicloud");
++      return new GmicloudTTS();
+     default:
+       throw new Error("ENV: No TTS_PROVIDER value found in environment!");
+   }
+diff --git a/server/utils/helpers/updateENV.js b/server/utils/helpers/updateENV.js
+index 2ff0bca..6e04d29 100644
+--- a/server/utils/helpers/updateENV.js
++++ b/server/utils/helpers/updateENV.js
+@@ -791,6 +791,24 @@ const KEY_MAPPING = {
+     envKey: "TTS_KOKORO_ENDPOINT",
+     checks: [isValidURL],
+   },
++
++  // GMI Cloud TTS (Inworld, MiniMax and Chatterbox behind one request queue)
++  TTSGmicloudKey: {
++    envKey: "TTS_GMICLOUD_API_KEY",
++    checks: [],
++  },
++  TTSGmicloudModel: {
++    envKey: "TTS_GMICLOUD_MODEL",
++    checks: [],
++  },
++  TTSGmicloudVoiceModel: {
++    envKey: "TTS_GMICLOUD_VOICE_MODEL",
++    checks: [],
++  },
++  TTSGmicloudEndpoint: {
++    envKey: "TTS_GMICLOUD_ENDPOINT",
++    checks: [isValidURL],
++  },
+   TTSKokoroKey: {
+     envKey: "TTS_KOKORO_KEY",
+     checks: [],
+-- 
+2.43.0
+
