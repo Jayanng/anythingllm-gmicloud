@@ -13,7 +13,7 @@ multimodal request queue:
 
 AnythingLLM providers are in-tree modules, so this integration ships as a
 patch. Upstream pull request:
-https://github.com/Mintplex-Labs/anything-llm/pull/6987
+https://github.com/Mintplex-Labs/anything-llm/pull/7255
 
 ## Install (self-hosted AnythingLLM)
 
